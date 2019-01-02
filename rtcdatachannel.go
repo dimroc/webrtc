@@ -100,6 +100,9 @@ type RTCDataChannel struct {
 	rtcPeerConnection *RTCPeerConnection
 
 	dataChannel *datachannel.DataChannel
+
+	// A reference to the associated setting engine used by this datachannel
+	settingEngine *settingEngine
 }
 
 // OnOpen sets an event handler which is invoked when
@@ -184,7 +187,7 @@ func (d *RTCDataChannel) handleOpen(dc *datachannel.DataChannel) {
 	d.Lock()
 	defer d.Unlock()
 
-	if !defaultSettingEngine.Detach.DataChannels {
+	if !d.settingEngine.Detach.DataChannels {
 		go d.readLoop()
 	}
 }
@@ -242,7 +245,7 @@ func (d *RTCDataChannel) Detach() (*datachannel.DataChannel, error) {
 	d.Lock()
 	defer d.Unlock()
 
-	if !defaultSettingEngine.Detach.DataChannels {
+	if !d.settingEngine.Detach.DataChannels {
 		return nil, errors.New("enable detaching by calling webrtc.DetachDataChannels()")
 	}
 

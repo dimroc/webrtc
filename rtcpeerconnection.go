@@ -112,10 +112,12 @@ type RTCPeerConnection struct {
 
 	// Deprecated: Internal mechanism which will be removed.
 	networkManager *network.Manager
+
+	// A reference to the associated setting engine used by this peerconnection
+	settingEngine *settingEngine
 }
 
-// New creates a new RTCPeerConfiguration with the provided configuration
-func New(configuration RTCConfiguration) (*RTCPeerConnection, error) {
+func newPC(settings *settingEngine, configuration RTCConfiguration) (*RTCPeerConnection, error) {
 	// https://w3c.github.io/webrtc-pc/#constructor (Step #2)
 	// Some variables defined explicitly despite their implicit zero values to
 	// allow better readability to understand what is happening.
@@ -140,6 +142,7 @@ func New(configuration RTCConfiguration) (*RTCPeerConnection, error) {
 		mediaEngine:        DefaultMediaEngine,
 		sctpTransport:      newRTCSctpTransport(),
 		dataChannels:       make(map[uint16]*RTCDataChannel),
+		settingEngine:      settings,
 	}
 
 	var err error
@@ -162,15 +165,20 @@ func New(configuration RTCConfiguration) (*RTCPeerConnection, error) {
 
 	pc.networkManager, err = network.NewManager(
 		&ice.AgentConfig{Urls: urls, Notifier: pc.iceStateChange,
-			PortMin:           defaultSettingEngine.EphemeralUDP.PortMin,
-			PortMax:           defaultSettingEngine.EphemeralUDP.PortMax,
-			ConnectionTimeout: defaultSettingEngine.Timeout.ICEConnection,
-			KeepaliveInterval: defaultSettingEngine.Timeout.ICEKeepalive})
+			PortMin:           pc.settingEngine.EphemeralUDP.PortMin,
+			PortMax:           pc.settingEngine.EphemeralUDP.PortMax,
+			ConnectionTimeout: pc.settingEngine.Timeout.ICEConnection,
+			KeepaliveInterval: pc.settingEngine.Timeout.ICEKeepalive})
 	if err != nil {
 		return nil, err
 	}
 
 	return &pc, nil
+}
+
+// New creates a new RTCPeerConfiguration with the provided configuration
+func New(configuration RTCConfiguration) (*RTCPeerConnection, error) {
+	return newPC(defaultSettingEngine, configuration)
 }
 
 // initConfiguration defines validation of the specified RTCConfiguration and
@@ -812,6 +820,7 @@ func (pc *RTCPeerConnection) acceptDataChannels() {
 			Label:             dc.Config.Label,
 			rtcPeerConnection: pc,
 			ReadyState:        RTCDataChannelStateOpen,
+			settingEngine:     pc.settingEngine,
 		}
 
 		pc.Lock()
@@ -1074,6 +1083,7 @@ func (pc *RTCPeerConnection) CreateDataChannel(label string, options *RTCDataCha
 		ReadyState: RTCDataChannelStateConnecting,
 		// https://w3c.github.io/webrtc-pc/#dfn-create-an-rtcdatachannel (Step #3)
 		BufferedAmount: 0,
+		settingEngine:  pc.settingEngine,
 	}
 
 	if options != nil {
