@@ -88,8 +88,6 @@ type RTCPeerConnection struct {
 	lastOffer  string
 	lastAnswer string
 
-	// Media
-	mediaEngine     *MediaEngine
 	rtpTransceivers []*RTCRtpTransceiver
 
 	// sctpTransport
@@ -113,11 +111,12 @@ type RTCPeerConnection struct {
 	// Deprecated: Internal mechanism which will be removed.
 	networkManager *network.Manager
 
-	// A reference to the associated setting engine used by this peerconnection
-	settingEngine *settingEngine
+	// A reference to the associated API state used by this connection
+	api *API
 }
 
-func newPC(settings *settingEngine, configuration RTCConfiguration) (*RTCPeerConnection, error) {
+// New creates a new RTCPeerConfiguration with the provided configuration against the received API object
+func (api *API) New(configuration RTCConfiguration) (*RTCPeerConnection, error) {
 	// https://w3c.github.io/webrtc-pc/#constructor (Step #2)
 	// Some variables defined explicitly despite their implicit zero values to
 	// allow better readability to understand what is happening.
@@ -139,10 +138,9 @@ func newPC(settings *settingEngine, configuration RTCConfiguration) (*RTCPeerCon
 		IceConnectionState: ice.ConnectionStateNew, // FIXME REMOVE
 		IceGatheringState:  RTCIceGatheringStateNew,
 		ConnectionState:    RTCPeerConnectionStateNew,
-		mediaEngine:        DefaultMediaEngine,
 		sctpTransport:      newRTCSctpTransport(),
 		dataChannels:       make(map[uint16]*RTCDataChannel),
-		settingEngine:      settings,
+		api:                api,
 	}
 
 	var err error
@@ -165,10 +163,10 @@ func newPC(settings *settingEngine, configuration RTCConfiguration) (*RTCPeerCon
 
 	pc.networkManager, err = network.NewManager(
 		&ice.AgentConfig{Urls: urls, Notifier: pc.iceStateChange,
-			PortMin:           pc.settingEngine.EphemeralUDP.PortMin,
-			PortMax:           pc.settingEngine.EphemeralUDP.PortMax,
-			ConnectionTimeout: pc.settingEngine.Timeout.ICEConnection,
-			KeepaliveInterval: pc.settingEngine.Timeout.ICEKeepalive})
+			PortMin:           pc.api.settingEngine.EphemeralUDP.PortMin,
+			PortMax:           pc.api.settingEngine.EphemeralUDP.PortMax,
+			ConnectionTimeout: pc.api.settingEngine.Timeout.ICEConnection,
+			KeepaliveInterval: pc.api.settingEngine.Timeout.ICEKeepalive})
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +176,7 @@ func newPC(settings *settingEngine, configuration RTCConfiguration) (*RTCPeerCon
 
 // New creates a new RTCPeerConfiguration with the provided configuration
 func New(configuration RTCConfiguration) (*RTCPeerConnection, error) {
-	return newPC(defaultSettingEngine, configuration)
+	return defaultAPI.New(configuration)
 }
 
 // initConfiguration defines validation of the specified RTCConfiguration and
@@ -820,7 +818,7 @@ func (pc *RTCPeerConnection) acceptDataChannels() {
 			Label:             dc.Config.Label,
 			rtcPeerConnection: pc,
 			ReadyState:        RTCDataChannelStateOpen,
-			settingEngine:     pc.settingEngine,
+			settingEngine:     &pc.api.settingEngine,
 		}
 
 		pc.Lock()
@@ -1083,7 +1081,7 @@ func (pc *RTCPeerConnection) CreateDataChannel(label string, options *RTCDataCha
 		ReadyState: RTCDataChannelStateConnecting,
 		// https://w3c.github.io/webrtc-pc/#dfn-create-an-rtcdatachannel (Step #3)
 		BufferedAmount: 0,
-		settingEngine:  pc.settingEngine,
+		settingEngine:  &pc.api.settingEngine,
 	}
 
 	if options != nil {
@@ -1188,12 +1186,6 @@ func (pc *RTCPeerConnection) generateDataChannelID(client bool) (*uint16, error)
 	return nil, &rtcerr.OperationError{Err: ErrMaxDataChannelID}
 }
 
-// SetMediaEngine allows overwriting the default media engine used by the RTCPeerConnection
-// This enables RTCPeerConnection with support for different codecs
-func (pc *RTCPeerConnection) SetMediaEngine(m *MediaEngine) {
-	pc.mediaEngine = m
-}
-
 // SetIdentityProvider is used to configure an identity provider to generate identity assertions
 func (pc *RTCPeerConnection) SetIdentityProvider(provider string) error {
 	return errors.Errorf("TODO SetIdentityProvider")
@@ -1272,7 +1264,7 @@ func (pc *RTCPeerConnection) generateChannel(rawRTP []byte) (chan *rtp.Packet, c
 		return nil, nil, fmt.Errorf("no codec could be found in RemoteDescription for payloadType %d", rtpPacket.PayloadType)
 	}
 
-	codec, err := pc.mediaEngine.getCodecSDP(sdpCodec)
+	codec, err := pc.api.mediaEngine.getCodecSDP(sdpCodec)
 	if err != nil {
 		return nil, nil, fmt.Errorf("codec %s in not registered", sdpCodec)
 	}
@@ -1338,7 +1330,7 @@ func (pc *RTCPeerConnection) addFingerprint(d *sdp.SessionDescription) {
 }
 
 func (pc *RTCPeerConnection) addRTPMediaSection(d *sdp.SessionDescription, codecType RTCRtpCodecType, midValue string, peerDirection RTCRtpTransceiverDirection, candidates []string, dtlsRole sdp.ConnectionRole) bool {
-	if codecs := pc.mediaEngine.getCodecsByKind(codecType); len(codecs) == 0 {
+	if codecs := pc.api.mediaEngine.getCodecsByKind(codecType); len(codecs) == 0 {
 		return false
 	}
 	media := sdp.NewJSEPMediaDescription(codecType.String(), []string{}).
@@ -1348,7 +1340,7 @@ func (pc *RTCPeerConnection) addRTPMediaSection(d *sdp.SessionDescription, codec
 		WithPropertyAttribute(sdp.AttrKeyRtcpMux).  // TODO: support RTCP fallback
 		WithPropertyAttribute(sdp.AttrKeyRtcpRsize) // TODO: Support Reduced-Size RTCP?
 
-	for _, codec := range pc.mediaEngine.getCodecsByKind(codecType) {
+	for _, codec := range pc.api.mediaEngine.getCodecsByKind(codecType) {
 		media.WithCodec(codec.PayloadType, codec.Name, codec.ClockRate, codec.Channels, codec.SdpFmtpLine)
 	}
 
@@ -1423,7 +1415,7 @@ func (pc *RTCPeerConnection) sendRTP(packet *rtp.Packet) {
 }
 
 func (pc *RTCPeerConnection) newRTCTrack(payloadType uint8, ssrc uint32, id, label string) (*RTCTrack, error) {
-	codec, err := pc.mediaEngine.getCodec(payloadType)
+	codec, err := pc.api.mediaEngine.getCodec(payloadType)
 	if err != nil {
 		return nil, err
 	} else if codec.Payloader == nil {
